@@ -33,11 +33,36 @@ enum class Role {
     SYSTEM,
     USER,
     ASSISTANT,
+    TOOL,
+};
+
+// One function call requested by the model.
+struct ToolCall {
+    std::string id;
+    std::string name;
+    std::string arguments;  // raw JSON string
 };
 
 struct Message {
     Role role;
     std::string content;
+    std::vector<ToolCall> tool_calls;  // non-empty for ASSISTANT tool-call turns
+    std::string tool_call_id;          // non-empty for TOOL role
+};
+
+// A single parameter in a tool's JSON-Schema-style definition.
+struct ToolParam {
+    std::string name;
+    std::string description;
+    std::string type = "string";  // "string" | "number" | "integer" | "boolean"
+    bool required = true;
+};
+
+// Describes a callable tool that can be offered to the model.
+struct ToolDef {
+    std::string name;
+    std::string description;
+    std::vector<ToolParam> parameters;
 };
 
 struct LlmConfig {
@@ -80,6 +105,13 @@ public:
 
     // Blocking embedding. Returns the embedding vector.
     std::vector<float> embed(const std::string &text);
+
+    // One turn of a tool-augmented chat. Returns the assistant Message, which
+    // either contains a text reply (tool_calls empty) or a list of tool calls
+    // to be executed by the caller before the next turn.
+    Message chat_with_tools(
+            const std::vector<Message> &messages,
+            const std::vector<ToolDef> &tools);
 
 private:
     std::unique_ptr<LlmProvider> _provider;

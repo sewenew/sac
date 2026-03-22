@@ -79,4 +79,10 @@ std::vector<float> LlmClient::embed(const std::string &text) {
     return _provider->embed(text, _http);
 }
 
+Message LlmClient::chat_with_tools(
+        const std::vector<Message> &messages,
+        const std::vector<ToolDef> &tools) {
+    return _provider->chat_with_tools(messages, tools, _http);
+}
+
 } // namespace sw::sac

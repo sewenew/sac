@@ -56,6 +56,11 @@ public:
             const std::string &text,
             HttpClient &http) override;
 
+    Message chat_with_tools(
+            const std::vector<Message> &messages,
+            const std::vector<ToolDef> &tools,
+            HttpClient &http) override;
+
 private:
     // Returns {"Authorization": "Bearer <key>", "Content-Type": "application/json"}.
     HeaderMap _auth_headers() const;

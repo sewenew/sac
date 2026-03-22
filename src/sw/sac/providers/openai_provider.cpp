@@ -30,8 +30,67 @@ std::string role_to_string(Role role) {
     case Role::SYSTEM:    return "system";
     case Role::USER:      return "user";
     case Role::ASSISTANT: return "assistant";
+    case Role::TOOL:      return "tool";
     }
     return "user";
+}
+
+// Serialise a single Message to JSON, handling all role variants.
+nlohmann::json message_to_json(const Message &m) {
+    if (m.role == Role::TOOL) {
+        return {
+            {"role", "tool"},
+            {"content", m.content},
+            {"tool_call_id", m.tool_call_id},
+        };
+    }
+
+    if (m.role == Role::ASSISTANT && !m.tool_calls.empty()) {
+        nlohmann::json tc_arr = nlohmann::json::array();
+        for (const auto &tc : m.tool_calls) {
+            tc_arr.push_back({
+                {"id", tc.id},
+                {"type", "function"},
+                {"function", {{"name", tc.name}, {"arguments", tc.arguments}}},
+            });
+        }
+        nlohmann::json j = {
+            {"role", "assistant"},
+            {"content", m.content.empty() ? nlohmann::json(nullptr) : nlohmann::json(m.content)},
+            {"tool_calls", tc_arr},
+        };
+        return j;
+    }
+
+    return {{"role", role_to_string(m.role)}, {"content", m.content}};
+}
+
+// Build the "tools" array from ToolDef list.
+nlohmann::json tools_to_json(const std::vector<ToolDef> &tools) {
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto &t : tools) {
+        nlohmann::json props = nlohmann::json::object();
+        nlohmann::json required = nlohmann::json::array();
+        for (const auto &p : t.parameters) {
+            props[p.name] = {{"type", p.type}, {"description", p.description}};
+            if (p.required) {
+                required.push_back(p.name);
+            }
+        }
+        arr.push_back({
+            {"type", "function"},
+            {"function", {
+                {"name", t.name},
+                {"description", t.description},
+                {"parameters", {
+                    {"type", "object"},
+                    {"properties", props},
+                    {"required", required},
+                }},
+            }},
+        });
+    }
+    return arr;
 }
 
 } // namespace
@@ -85,6 +144,60 @@ std::vector<float> OpenAiProvider::embed(
 }
 
 // ---------------------------------------------------------------------------
+// chat_with_tools — one tool-augmented turn
+// ---------------------------------------------------------------------------
+
+Message OpenAiProvider::chat_with_tools(
+        const std::vector<Message> &messages,
+        const std::vector<ToolDef> &tools,
+        HttpClient &http) {
+    nlohmann::json msg_array = nlohmann::json::array();
+    for (const auto &m : messages) {
+        msg_array.push_back(message_to_json(m));
+    }
+
+    nlohmann::json req = {
+        {"model", _config.model},
+        {"messages", msg_array},
+        {"tools", tools_to_json(tools)},
+        {"tool_choice", "auto"},
+    };
+
+    auto url = _config.base_url + "/chat/completions";
+    auto response_str = http.post(url, _auth_headers(), req.dump());
+
+    try {
+        auto j = nlohmann::json::parse(response_str);
+
+        if (j.contains("error")) {
+            throw ApiError(j["error"].value("message", response_str));
+        }
+
+        const auto &msg = j.at("choices").at(0).at("message");
+        Message result;
+        result.role = Role::ASSISTANT;
+        result.content = msg.value("content", "");
+
+        if (msg.contains("tool_calls") && !msg["tool_calls"].is_null()) {
+            for (const auto &tc : msg["tool_calls"]) {
+                ToolCall call;
+                call.id = tc.at("id").get<std::string>();
+                call.name = tc.at("function").at("name").get<std::string>();
+                call.arguments = tc.at("function").at("arguments").get<std::string>();
+                result.tool_calls.push_back(std::move(call));
+            }
+        }
+
+        return result;
+    } catch (const Error &) {
+        throw;
+    } catch (const nlohmann::json::exception &e) {
+        throw ParseError(std::string("OpenAI tool-call parse error: ") + e.what()
+                + " | body: " + response_str);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
 
@@ -99,7 +212,7 @@ nlohmann::json OpenAiProvider::_build_chat_request(
         const std::vector<Message> &messages, bool stream) const {
     nlohmann::json msg_array = nlohmann::json::array();
     for (const auto &m : messages) {
-        msg_array.push_back({{"role", role_to_string(m.role)}, {"content", m.content}});
+        msg_array.push_back(message_to_json(m));
     }
 
     nlohmann::json req = {

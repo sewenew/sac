@@ -25,6 +25,7 @@ namespace sw::sac {
 
 class HttpClient;
 struct Message;
+struct ToolDef;
 
 using StreamCallback = std::function<void(const std::string &token)>;
 
@@ -56,6 +57,13 @@ public:
     virtual std::vector<float> embed(
             const std::string &text,
             HttpClient &http) = 0;
+
+    // One tool-augmented turn. Returns the assistant Message (content or tool_calls).
+    // Providers that do not support tool use should override and throw ApiError.
+    virtual Message chat_with_tools(
+            const std::vector<Message> &messages,
+            const std::vector<ToolDef> &tools,
+            HttpClient &http);
 };
 
 } // namespace sw::sac
