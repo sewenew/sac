@@ -17,8 +17,12 @@
 #ifndef SEWENEW_SAC_HTTP_CLIENT_H
 #define SEWENEW_SAC_HTTP_CLIENT_H
 
+#include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 
@@ -32,6 +36,109 @@ using HeaderMap = std::unordered_map<std::string, std::string>;
 
 // Invoked once per SSE `data:` payload (prefix stripped, no trailing newline).
 using SseCallback = std::function<void(const std::string &data)>;
+
+// Options for HTTP connection pool.
+struct HttpConnectionPoolOptions {
+    // Max number of connections per pool, including both in-use and idle ones.
+    std::size_t size = 10;
+
+    // Max time to wait for a connection. 0ms means client waits forever.
+    std::chrono::milliseconds wait_timeout{0};
+
+    // Max lifetime of a connection. 0ms means we never expire the connection.
+    std::chrono::milliseconds connection_lifetime{0};
+
+    // Max idle time of a connection. 0ms means we never expire the connection.
+    std::chrono::milliseconds connection_idle_time{0};
+};
+
+// Key for identifying a connection pool. Connections with the same key can be reused.
+// Contains all options that affect the underlying TCP/TLS connection.
+struct PoolKey {
+    std::string url_base;        // scheme://host:port (e.g., "https://api.anthropic.com:443")
+    std::string proxy_url;       // proxy URL (empty if no proxy)
+};
+
+inline bool operator==(const PoolKey &lhs, const PoolKey &rhs) {
+    return lhs.url_base == rhs.url_base && lhs.proxy_url == rhs.proxy_url;
+}
+
+struct PoolKeyHash {
+    std::size_t operator()(const PoolKey &pool_key) const noexcept {
+        auto url_base_hash = std::hash<std::string>{}(pool_key.url_base);
+        auto proxy_url_hash = std::hash<std::string>{}(pool_key.proxy_url);
+        return url_base_hash ^ (proxy_url_hash << 1);
+    }
+};
+
+// Forward declaration
+class HttpConnectionPool;
+
+using HttpConnectionPoolSPtr = std::shared_ptr<HttpConnectionPool>;
+
+// Thread-safe pool of reusable CURL connections.
+class HttpConnectionPool {
+public:
+    HttpConnectionPool(const PoolKey &key,
+                       const HttpConnectionPoolOptions &pool_opts);
+
+    HttpConnectionPool(const HttpConnectionPool &) = delete;
+    HttpConnectionPool &operator=(const HttpConnectionPool &) = delete;
+
+    ~HttpConnectionPool();
+
+    // Fetch a CURL handle from the pool.
+    // Blocks if the pool is empty and max connections are in use.
+    // The returned handle must be released via release().
+    void *fetch();
+
+    // Release a CURL handle back to the pool.
+    void release(void *curl);
+
+    // Create a new connection (not from the pool).
+    void *create();
+
+    const PoolKey &key() const noexcept { return _key; }
+
+private:
+    void *_fetch(std::unique_lock<std::mutex> &lock);
+
+    void *_fetch_from_pool();
+
+    void _wait_for_connection(std::unique_lock<std::mutex> &lock);
+
+    bool _need_reconnect(void *curl) const;
+
+    PoolKey _key;
+    HttpConnectionPoolOptions _pool_opts;
+
+    std::deque<void *> _pool;  // Available CURL handles
+    std::size_t _used_connections = 0;
+
+    std::mutex _mutex;
+    std::condition_variable _cv;
+};
+
+// RAII wrapper for fetching and releasing a connection from the pool.
+class HttpConnectionHandle {
+public:
+    explicit HttpConnectionHandle(HttpConnectionPool &pool);
+
+    HttpConnectionHandle(const HttpConnectionHandle &) = delete;
+    HttpConnectionHandle &operator=(const HttpConnectionHandle &) = delete;
+
+    ~HttpConnectionHandle() {
+        if (_pool && _curl) {
+            _pool->release(_curl);
+        }
+    }
+
+    void *get() const noexcept { return _curl; }
+
+private:
+    HttpConnectionPool *_pool = nullptr;
+    void *_curl = nullptr;
+};
 
 // Abstract base — callers depend only on this interface.
 // Swap the concrete impl (CurlHttpClient -> CppHttplibClient) without
@@ -58,10 +165,11 @@ public:
             SseCallback callback) = 0;
 };
 
-// libcurl-backed implementation.
+// libcurl-backed implementation with connection pooling.
 class CurlHttpClient : public HttpClient {
 public:
-    CurlHttpClient();
+    // Constructor with custom pool options.
+    explicit CurlHttpClient(const HttpConnectionPoolOptions &pool_opts = {});
 
     CurlHttpClient(const CurlHttpClient &) = delete;
     CurlHttpClient &operator=(const CurlHttpClient &) = delete;
@@ -81,6 +189,9 @@ public:
             const std::string &body,
             SseCallback callback) override;
 
+    // Set proxy for all connections.
+    void set_proxy(const std::string &proxy_url) { _proxy_url = proxy_url; }
+
 private:
     struct CurlHandleDeleter {
         void operator()(void *handle) const noexcept;
@@ -98,12 +209,20 @@ private:
         SseCallback callback;
     };
 
-    // Shared CURL* setup for both post() and post_sse().
-    CurlHandleUPtr _make_handle(
+    // Extract scheme://host:port from a full URL.
+    static std::string _extract_url_base(const std::string &url);
+
+    // Get or create a connection pool for the given key.
+    HttpConnectionPoolSPtr _get_or_create_pool(const PoolKey &key);
+
+    // Set request-specific options on a CURL handle.
+    void _set_request_options(
+            void *curl,
             const std::string &url,
             const HeaderMap &headers,
             const std::string &body,
-            CurlListUPtr &out_headers);
+            ::curl_slist *header_list,
+            const PoolKey &key);
 
     // Validates curl result and HTTP status; throws on error.
     void _check_result(void *curl, int curl_code, const std::string &url) const;
@@ -116,6 +235,16 @@ private:
 
     // Dispatches complete SSE event blocks from SseState::buffer.
     static void _dispatch_events(SseState &state);
+
+    // Pool options
+    HttpConnectionPoolOptions _pool_opts;
+
+    // Connection pools indexed by PoolKey.
+    std::unordered_map<PoolKey, HttpConnectionPoolSPtr, PoolKeyHash> _pools;
+    std::mutex _pools_mutex;
+
+    // Connection configuration (part of PoolKey).
+    std::string _proxy_url;
 };
 
 } // namespace sw::sac
