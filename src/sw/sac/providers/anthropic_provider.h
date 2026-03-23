@@ -28,6 +28,12 @@
 
 namespace sw::sac {
 
+struct AnthropicOptions {
+    std::string base_url = "https://api.anthropic.com/v1";
+    std::string api_key;
+    std::string model;
+};
+
 // Anthropic Messages API.
 // Chat endpoint: <base_url>/messages  (default base_url: https://api.anthropic.com/v1)
 // Embedding:     not supported — embed() throws ApiError.
@@ -42,7 +48,7 @@ class AnthropicProvider : public LlmProvider {
 public:
     static constexpr int DEFAULT_MAX_TOKENS = 4096;
 
-    explicit AnthropicProvider(LlmConfig config);
+    explicit AnthropicProvider(const AnthropicOptions &opts);
 
     AnthropicProvider(const AnthropicProvider &) = delete;
     AnthropicProvider &operator=(const AnthropicProvider &) = delete;
@@ -78,7 +84,7 @@ private:
     // is not of type "content_block_delta".
     std::string _extract_sse_token(const std::string &data_line) const;
 
-    LlmConfig _config;
+    AnthropicOptions _opts;
 };
 
 } // namespace sw::sac

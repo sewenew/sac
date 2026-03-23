@@ -20,6 +20,7 @@ add_library(sac_lib STATIC
     src/sw/sac/llm_client.cpp
     src/sw/sac/providers/anthropic_provider.cpp
     src/sw/sac/providers/openai_provider.cpp
+    src/sw/sac/providers/llm_provider.cpp
 )
 
 target_include_directories(sac_lib PUBLIC src/)

@@ -22,6 +22,7 @@
 #include "sw/sac/http_client.h"
 #include "sw/sac/llm_client.h"
 #include "sw/sac/errors.h"
+#include "sw/sac/providers/openai_provider.h"
 
 int main() {
     const char *api_key = std::getenv("OPENAI_API_KEY");
@@ -41,8 +42,9 @@ int main() {
     }
 
     sw::sac::CurlHttpClient http;
+    sw::sac::OpenAiOptions opts{base_url, api_key, model};
     sw::sac::LlmClient client(
-        sw::sac::make_openai_provider({base_url, api_key, model}),
+        sw::sac::make_openai_provider(opts),
         http);
 
     std::vector<sw::sac::Message> messages = {

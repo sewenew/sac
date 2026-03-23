@@ -28,15 +28,21 @@
 
 namespace sw::sac {
 
+struct OpenAiOptions {
+    std::string base_url = "https://api.openai.com/v1";
+    std::string api_key;
+    std::string model;
+};
+
 // Handles any OpenAI-compatible API: OpenAI, Volcengine ARK, Kimi (Moonshot AI).
-// The wire format is identical across all three; only LlmConfig.base_url,
+// The wire format is identical across all three; only OpenAiOptions.base_url,
 // api_key, and model differ.
 //
 // Chat endpoint:      <base_url>/chat/completions
 // Embedding endpoint: <base_url>/embeddings
 class OpenAiProvider : public LlmProvider {
 public:
-    explicit OpenAiProvider(LlmConfig config);
+    explicit OpenAiProvider(const OpenAiOptions &opts);
 
     OpenAiProvider(const OpenAiProvider &) = delete;
     OpenAiProvider &operator=(const OpenAiProvider &) = delete;
@@ -78,7 +84,7 @@ private:
 
     std::vector<float> _extract_embedding(const std::string &response_json) const;
 
-    LlmConfig _config;
+    OpenAiOptions _opts;
 };
 
 } // namespace sw::sac

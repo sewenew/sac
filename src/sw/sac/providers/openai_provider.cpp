@@ -95,7 +95,7 @@ nlohmann::json tools_to_json(const std::vector<ToolDef> &tools) {
 
 } // namespace
 
-OpenAiProvider::OpenAiProvider(LlmConfig config) : _config(std::move(config)) {}
+OpenAiProvider::OpenAiProvider(const OpenAiOptions &opts) : _opts(opts) {}
 
 // ---------------------------------------------------------------------------
 // chat — blocking
@@ -105,7 +105,7 @@ std::string OpenAiProvider::chat(
         const std::vector<Message> &messages,
         HttpClient &http) {
     auto req = _build_chat_request(messages, false);
-    auto url = _config.base_url + "/chat/completions";
+    auto url = _opts.base_url + "/chat/completions";
     auto response = http.post(url, _auth_headers(), req.dump());
     return _extract_content(response);
 }
@@ -119,7 +119,7 @@ void OpenAiProvider::chat_stream(
         HttpClient &http,
         StreamCallback callback) {
     auto req = _build_chat_request(messages, true);
-    auto url = _config.base_url + "/chat/completions";
+    auto url = _opts.base_url + "/chat/completions";
 
     http.post_sse(url, _auth_headers(), req.dump(),
             [this, &callback](const std::string &data_line) {
@@ -138,7 +138,7 @@ std::vector<float> OpenAiProvider::embed(
         const std::string &text,
         HttpClient &http) {
     auto req = _build_embed_request(text);
-    auto url = _config.base_url + "/embeddings";
+    auto url = _opts.base_url + "/embeddings";
     auto response = http.post(url, _auth_headers(), req.dump());
     return _extract_embedding(response);
 }
@@ -157,13 +157,13 @@ Message OpenAiProvider::chat_with_tools(
     }
 
     nlohmann::json req = {
-        {"model", _config.model},
+        {"model", _opts.model},
         {"messages", msg_array},
         {"tools", tools_to_json(tools)},
         {"tool_choice", "auto"},
     };
 
-    auto url = _config.base_url + "/chat/completions";
+    auto url = _opts.base_url + "/chat/completions";
     auto response_str = http.post(url, _auth_headers(), req.dump());
 
     try {
@@ -203,7 +203,7 @@ Message OpenAiProvider::chat_with_tools(
 
 HeaderMap OpenAiProvider::_auth_headers() const {
     return {
-        {"Authorization", "Bearer " + _config.api_key},
+        {"Authorization", "Bearer " + _opts.api_key},
         {"Content-Type", "application/json"},
     };
 }
@@ -216,7 +216,7 @@ nlohmann::json OpenAiProvider::_build_chat_request(
     }
 
     nlohmann::json req = {
-        {"model", _config.model},
+        {"model", _opts.model},
         {"messages", msg_array},
         {"stream", stream},
     };
@@ -225,7 +225,7 @@ nlohmann::json OpenAiProvider::_build_chat_request(
 
 nlohmann::json OpenAiProvider::_build_embed_request(const std::string &text) const {
     return {
-        {"model", _config.model},
+        {"model", _opts.model},
         {"input", text},
     };
 }

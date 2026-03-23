@@ -35,7 +35,7 @@ std::string role_to_string(Role role) {
 
 } // namespace
 
-AnthropicProvider::AnthropicProvider(LlmConfig config) : _config(std::move(config)) {}
+AnthropicProvider::AnthropicProvider(const AnthropicOptions &opts) : _opts(opts) {}
 
 // ---------------------------------------------------------------------------
 // chat — blocking
@@ -45,7 +45,7 @@ std::string AnthropicProvider::chat(
         const std::vector<Message> &messages,
         HttpClient &http) {
     auto req = _build_request(messages, false);
-    auto url = _config.base_url + "/messages";
+    auto url = _opts.base_url + "/messages";
     auto response = http.post(url, _auth_headers(), req.dump());
     return _extract_content(response);
 }
@@ -59,7 +59,7 @@ void AnthropicProvider::chat_stream(
         HttpClient &http,
         StreamCallback callback) {
     auto req = _build_request(messages, true);
-    auto url = _config.base_url + "/messages";
+    auto url = _opts.base_url + "/messages";
 
     http.post_sse(url, _auth_headers(), req.dump(),
             [this, &callback](const std::string &data_line) {
@@ -86,7 +86,7 @@ std::vector<float> AnthropicProvider::embed(
 
 HeaderMap AnthropicProvider::_auth_headers() const {
     return {
-        {"x-api-key", _config.api_key},
+        {"x-api-key", _opts.api_key},
         {"anthropic-version", "2023-06-01"},
         {"Content-Type", "application/json"},
     };
@@ -95,7 +95,7 @@ HeaderMap AnthropicProvider::_auth_headers() const {
 nlohmann::json AnthropicProvider::_build_request(
         const std::vector<Message> &messages, bool stream) const {
     nlohmann::json req = {
-        {"model", _config.model},
+        {"model", _opts.model},
         {"max_tokens", DEFAULT_MAX_TOKENS},
         {"stream", stream},
     };

@@ -28,6 +28,8 @@ namespace sw::sac {
 
 class HttpClient;
 class LlmProvider;
+struct AnthropicOptions;
+struct OpenAiOptions;
 
 enum class Role {
     SYSTEM,
@@ -65,24 +67,18 @@ struct ToolDef {
     std::vector<ToolParam> parameters;
 };
 
-struct LlmConfig {
-    std::string base_url;
-    std::string api_key;
-    std::string model;
-};
-
 using StreamCallback = std::function<void(const std::string &token)>;
 
 // Factory functions — return the appropriate provider without requiring callers
 // to include provider headers directly.
-std::unique_ptr<LlmProvider> make_anthropic_provider(LlmConfig config);
+std::unique_ptr<LlmProvider> make_anthropic_provider(const AnthropicOptions &opts);
 
 // OpenAI-compatible: also handles Volcengine ARK and Kimi via LlmConfig.
-std::unique_ptr<LlmProvider> make_openai_provider(LlmConfig config);
+std::unique_ptr<LlmProvider> make_openai_provider(const OpenAiOptions &opts);
 
-std::unique_ptr<LlmProvider> make_kimi_provider(LlmConfig config);
+std::unique_ptr<LlmProvider> make_kimi_provider(const OpenAiOptions &opts);
 
-std::unique_ptr<LlmProvider> make_ark_provider(LlmConfig config);
+std::unique_ptr<LlmProvider> make_ark_provider(const OpenAiOptions &opts);
 
 // Stable facade over any LlmProvider + HttpClient combination.
 // Does NOT own the HttpClient; the caller manages its lifetime, which must

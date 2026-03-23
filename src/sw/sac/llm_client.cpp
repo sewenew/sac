@@ -28,32 +28,20 @@ namespace sw::sac {
 // Factory functions
 // ---------------------------------------------------------------------------
 
-std::unique_ptr<LlmProvider> make_anthropic_provider(LlmConfig config) {
-    if (config.base_url.empty()) {
-        config.base_url = "https://api.anthropic.com/v1";
-    }
-    return std::make_unique<AnthropicProvider>(std::move(config));
+std::unique_ptr<LlmProvider> make_anthropic_provider(const AnthropicOptions &opts) {
+    return std::make_unique<AnthropicProvider>(opts);
 }
 
-std::unique_ptr<LlmProvider> make_openai_provider(LlmConfig config) {
-    if (config.base_url.empty()) {
-        config.base_url = "https://api.openai.com/v1";
-    }
-    return std::make_unique<OpenAiProvider>(std::move(config));
+std::unique_ptr<LlmProvider> make_openai_provider(const OpenAiOptions &opts) {
+    return std::make_unique<OpenAiProvider>(opts);
 }
 
-std::unique_ptr<LlmProvider> make_ark_provider(LlmConfig config) {
-    if (config.base_url.empty()) {
-        config.base_url = "https://ark.cn-beijing.volces.com/api/v3";
-    }
-    return std::make_unique<OpenAiProvider>(std::move(config));
+std::unique_ptr<LlmProvider> make_ark_provider(const OpenAiOptions &opts) {
+    return std::make_unique<OpenAiProvider>(opts);
 }
 
-std::unique_ptr<LlmProvider> make_kimi_provider(LlmConfig config) {
-    if (config.base_url.empty()) {
-        config.base_url = "https://api.moonshot.cn/v1";
-    }
-    return std::make_unique<OpenAiProvider>(std::move(config));
+std::unique_ptr<LlmProvider> make_kimi_provider(const OpenAiOptions &opts) {
+    return std::make_unique<OpenAiProvider>(opts);
 }
 
 // ---------------------------------------------------------------------------
