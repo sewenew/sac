@@ -12,14 +12,13 @@
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
- *************************************************************************/
+*************************************************************************/
 
 #include "sw/sac/providers/openai_provider.h"
 
 #include <nlohmann/json.hpp>
 
 #include "sw/sac/errors.h"
-#include "sw/sac/http_client.h"
 
 namespace sw::sac {
 
@@ -93,6 +92,87 @@ nlohmann::json tools_to_json(const std::vector<ToolDef> &tools) {
     return arr;
 }
 
+// Parser for blocking chat responses.
+class OpenAiChatParser : public ChatResponseParser {
+public:
+    std::string parse(const std::string &response_body) override {
+        try {
+            auto j = nlohmann::json::parse(response_body);
+
+            if (j.contains("error")) {
+                throw ApiError(j["error"].value("message", response_body));
+            }
+
+            return j.at("choices").at(0).at("message").at("content").get<std::string>();
+        } catch (const Error &) {
+            throw;
+        } catch (const nlohmann::json::exception &e) {
+            throw ParseError(std::string("OpenAI response parse error: ") + e.what()
+                    + " | body: " + response_body);
+        }
+    }
+};
+
+// Parser for streaming chat responses.
+class OpenAiStreamParser : public StreamResponseParser {
+public:
+    std::string parse_sse_token(const std::string &data_line) override {
+        try {
+            auto j = nlohmann::json::parse(data_line);
+
+            if (!j.contains("choices") || j["choices"].empty()) {
+                return "";
+            }
+
+            const auto &delta = j["choices"][0]["delta"];
+            if (!delta.contains("content") || delta["content"].is_null()) {
+                return "";
+            }
+
+            return delta["content"].get<std::string>();
+        } catch (const nlohmann::json::exception &) {
+            // Malformed SSE chunk — skip silently rather than aborting the stream.
+            return "";
+        }
+    }
+};
+
+// Parser for tool-augmented chat responses.
+class OpenAiToolParser : public ToolResponseParser {
+public:
+    Message parse(const std::string &response_body) override {
+        try {
+            auto j = nlohmann::json::parse(response_body);
+
+            if (j.contains("error")) {
+                throw ApiError(j["error"].value("message", response_body));
+            }
+
+            const auto &msg = j.at("choices").at(0).at("message");
+            Message result;
+            result.role = Role::ASSISTANT;
+            result.content = msg.value("content", "");
+
+            if (msg.contains("tool_calls") && !msg["tool_calls"].is_null()) {
+                for (const auto &tc : msg["tool_calls"]) {
+                    ToolCall call;
+                    call.id = tc.at("id").get<std::string>();
+                    call.name = tc.at("function").at("name").get<std::string>();
+                    call.arguments = tc.at("function").at("arguments").get<std::string>();
+                    result.tool_calls.push_back(std::move(call));
+                }
+            }
+
+            return result;
+        } catch (const Error &) {
+            throw;
+        } catch (const nlohmann::json::exception &e) {
+            throw ParseError(std::string("OpenAI tool-call parse error: ") + e.what()
+                    + " | body: " + response_body);
+        }
+    }
+};
+
 } // namespace
 
 OpenAiProvider::OpenAiProvider(const OpenAiOptions &opts) : _opts(opts) {}
@@ -101,56 +181,42 @@ OpenAiProvider::OpenAiProvider(const OpenAiOptions &opts) : _opts(opts) {}
 // chat — blocking
 // ---------------------------------------------------------------------------
 
-std::string OpenAiProvider::chat(
+ProviderRequest OpenAiProvider::build_chat_request(
         const std::vector<Message> &messages,
-        HttpClient &http) {
-    auto req = _build_chat_request(messages, false);
-    auto url = _opts.base_url + "/chat/completions";
-    auto response = http.post(url, _auth_headers(), req.dump());
-    return _extract_content(response);
+        ResponseParserPtr &parser) {
+    parser = std::make_unique<OpenAiChatParser>();
+    return {
+        _opts.base_url + "/chat/completions",
+        _auth_headers(),
+        _build_chat_request(messages, false).dump()
+    };
 }
 
 // ---------------------------------------------------------------------------
 // chat_stream — SSE
 // ---------------------------------------------------------------------------
 
-void OpenAiProvider::chat_stream(
+ProviderRequest OpenAiProvider::build_chat_stream_request(
         const std::vector<Message> &messages,
-        HttpClient &http,
-        StreamCallback callback) {
-    auto req = _build_chat_request(messages, true);
-    auto url = _opts.base_url + "/chat/completions";
-
-    http.post_sse(url, _auth_headers(), req.dump(),
-            [this, &callback](const std::string &data_line) {
-                auto token = _extract_sse_token(data_line);
-                if (!token.empty()) {
-                    callback(token);
-                }
-            });
-}
-
-// ---------------------------------------------------------------------------
-// embed — blocking
-// ---------------------------------------------------------------------------
-
-std::vector<float> OpenAiProvider::embed(
-        const std::string &text,
-        HttpClient &http) {
-    auto req = _build_embed_request(text);
-    auto url = _opts.base_url + "/embeddings";
-    auto response = http.post(url, _auth_headers(), req.dump());
-    return _extract_embedding(response);
+        ResponseParserPtr &parser) {
+    parser = std::make_unique<OpenAiStreamParser>();
+    return {
+        _opts.base_url + "/chat/completions",
+        _auth_headers(),
+        _build_chat_request(messages, true).dump()
+    };
 }
 
 // ---------------------------------------------------------------------------
 // chat_with_tools — one tool-augmented turn
 // ---------------------------------------------------------------------------
 
-Message OpenAiProvider::chat_with_tools(
+ProviderRequest OpenAiProvider::build_chat_with_tools_request(
         const std::vector<Message> &messages,
         const std::vector<ToolDef> &tools,
-        HttpClient &http) {
+        ResponseParserPtr &parser) {
+    parser = std::make_unique<OpenAiToolParser>();
+
     nlohmann::json msg_array = nlohmann::json::array();
     for (const auto &m : messages) {
         msg_array.push_back(message_to_json(m));
@@ -163,38 +229,11 @@ Message OpenAiProvider::chat_with_tools(
         {"tool_choice", "auto"},
     };
 
-    auto url = _opts.base_url + "/chat/completions";
-    auto response_str = http.post(url, _auth_headers(), req.dump());
-
-    try {
-        auto j = nlohmann::json::parse(response_str);
-
-        if (j.contains("error")) {
-            throw ApiError(j["error"].value("message", response_str));
-        }
-
-        const auto &msg = j.at("choices").at(0).at("message");
-        Message result;
-        result.role = Role::ASSISTANT;
-        result.content = msg.value("content", "");
-
-        if (msg.contains("tool_calls") && !msg["tool_calls"].is_null()) {
-            for (const auto &tc : msg["tool_calls"]) {
-                ToolCall call;
-                call.id = tc.at("id").get<std::string>();
-                call.name = tc.at("function").at("name").get<std::string>();
-                call.arguments = tc.at("function").at("arguments").get<std::string>();
-                result.tool_calls.push_back(std::move(call));
-            }
-        }
-
-        return result;
-    } catch (const Error &) {
-        throw;
-    } catch (const nlohmann::json::exception &e) {
-        throw ParseError(std::string("OpenAI tool-call parse error: ") + e.what()
-                + " | body: " + response_str);
-    }
+    return {
+        _opts.base_url + "/chat/completions",
+        _auth_headers(),
+        req.dump()
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -221,74 +260,6 @@ nlohmann::json OpenAiProvider::_build_chat_request(
         {"stream", stream},
     };
     return req;
-}
-
-nlohmann::json OpenAiProvider::_build_embed_request(const std::string &text) const {
-    return {
-        {"model", _opts.model},
-        {"input", text},
-    };
-}
-
-std::string OpenAiProvider::_extract_content(const std::string &response_json) const {
-    try {
-        auto j = nlohmann::json::parse(response_json);
-
-        if (j.contains("error")) {
-            throw ApiError(j["error"].value("message", response_json));
-        }
-
-        return j.at("choices").at(0).at("message").at("content").get<std::string>();
-    } catch (const Error &) {
-        throw;
-    } catch (const nlohmann::json::exception &e) {
-        throw ParseError(std::string("OpenAI response parse error: ") + e.what()
-                + " | body: " + response_json);
-    }
-}
-
-std::string OpenAiProvider::_extract_sse_token(const std::string &data_line) const {
-    try {
-        auto j = nlohmann::json::parse(data_line);
-
-        if (!j.contains("choices") || j["choices"].empty()) {
-            return "";
-        }
-
-        const auto &delta = j["choices"][0]["delta"];
-        if (!delta.contains("content") || delta["content"].is_null()) {
-            return "";
-        }
-
-        return delta["content"].get<std::string>();
-    } catch (const nlohmann::json::exception &) {
-        // Malformed SSE chunk — skip silently rather than aborting the stream.
-        return "";
-    }
-}
-
-std::vector<float> OpenAiProvider::_extract_embedding(
-        const std::string &response_json) const {
-    try {
-        auto j = nlohmann::json::parse(response_json);
-
-        if (j.contains("error")) {
-            throw ApiError(j["error"].value("message", response_json));
-        }
-
-        const auto &arr = j.at("data").at(0).at("embedding");
-        std::vector<float> result;
-        result.reserve(arr.size());
-        for (const auto &v : arr) {
-            result.push_back(v.get<float>());
-        }
-        return result;
-    } catch (const Error &) {
-        throw;
-    } catch (const nlohmann::json::exception &e) {
-        throw ParseError(std::string("OpenAI embedding parse error: ") + e.what()
-                + " | body: " + response_json);
-    }
 }
 
 } // namespace sw::sac

@@ -99,9 +99,6 @@ public:
     // Streaming chat. callback receives successive tokens as they arrive.
     void chat_stream(const std::vector<Message> &messages, StreamCallback callback);
 
-    // Blocking embedding. Returns the embedding vector.
-    std::vector<float> embed(const std::string &text);
-
     // One turn of a tool-augmented chat. Returns the assistant Message, which
     // either contains a text reply (tool_calls empty) or a list of tool calls
     // to be executed by the caller before the next turn.

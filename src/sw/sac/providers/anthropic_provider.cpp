@@ -12,12 +12,11 @@
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
- *************************************************************************/
+*************************************************************************/
 
 #include "sw/sac/providers/anthropic_provider.h"
 
 #include "sw/sac/errors.h"
-#include "sw/sac/http_client.h"
 
 namespace sw::sac {
 
@@ -33,6 +32,52 @@ std::string role_to_string(Role role) {
     }
 }
 
+// Parser for blocking chat responses.
+class AnthropicChatParser : public ChatResponseParser {
+public:
+    std::string parse(const std::string &response_body) override {
+        try {
+            auto j = nlohmann::json::parse(response_body);
+
+            if (j.contains("error")) {
+                auto &err = j["error"];
+                throw ApiError(err.value("message", response_body));
+            }
+
+            return j.at("content").at(0).at("text").get<std::string>();
+        } catch (const Error &) {
+            throw;
+        } catch (const nlohmann::json::exception &e) {
+            throw ParseError(std::string("Anthropic response parse error: ") + e.what()
+                    + " | body: " + response_body);
+        }
+    }
+};
+
+// Parser for streaming chat responses.
+class AnthropicStreamParser : public StreamResponseParser {
+public:
+    std::string parse_sse_token(const std::string &data_line) override {
+        try {
+            auto j = nlohmann::json::parse(data_line);
+
+            // Only "content_block_delta" events carry text.
+            if (j.value("type", "") != "content_block_delta") {
+                return "";
+            }
+
+            const auto &delta = j["delta"];
+            if (delta.value("type", "") != "text_delta") {
+                return "";
+            }
+
+            return delta.value("text", "");
+        } catch (const nlohmann::json::exception &) {
+            return "";
+        }
+    }
+};
+
 } // namespace
 
 AnthropicProvider::AnthropicProvider(const AnthropicOptions &opts) : _opts(opts) {}
@@ -41,43 +86,41 @@ AnthropicProvider::AnthropicProvider(const AnthropicOptions &opts) : _opts(opts)
 // chat — blocking
 // ---------------------------------------------------------------------------
 
-std::string AnthropicProvider::chat(
+ProviderRequest AnthropicProvider::build_chat_request(
         const std::vector<Message> &messages,
-        HttpClient &http) {
-    auto req = _build_request(messages, false);
-    auto url = _opts.base_url + "/messages";
-    auto response = http.post(url, _auth_headers(), req.dump());
-    return _extract_content(response);
+        ResponseParserPtr &parser) {
+    parser = std::make_unique<AnthropicChatParser>();
+    return {
+        _opts.base_url + "/messages",
+        _auth_headers(),
+        _build_request(messages, false).dump()
+    };
 }
 
 // ---------------------------------------------------------------------------
 // chat_stream — SSE
 // ---------------------------------------------------------------------------
 
-void AnthropicProvider::chat_stream(
+ProviderRequest AnthropicProvider::build_chat_stream_request(
         const std::vector<Message> &messages,
-        HttpClient &http,
-        StreamCallback callback) {
-    auto req = _build_request(messages, true);
-    auto url = _opts.base_url + "/messages";
-
-    http.post_sse(url, _auth_headers(), req.dump(),
-            [this, &callback](const std::string &data_line) {
-                auto token = _extract_sse_token(data_line);
-                if (!token.empty()) {
-                    callback(token);
-                }
-            });
+        ResponseParserPtr &parser) {
+    parser = std::make_unique<AnthropicStreamParser>();
+    return {
+        _opts.base_url + "/messages",
+        _auth_headers(),
+        _build_request(messages, true).dump()
+    };
 }
 
 // ---------------------------------------------------------------------------
-// embed — not supported
+// chat_with_tools — not supported
 // ---------------------------------------------------------------------------
 
-std::vector<float> AnthropicProvider::embed(
-        const std::string & /*text*/,
-        HttpClient & /*http*/) {
-    throw ApiError("Anthropic does not provide an embeddings endpoint");
+ProviderRequest AnthropicProvider::build_chat_with_tools_request(
+        const std::vector<Message> & /*messages*/,
+        const std::vector<ToolDef> & /*tools*/,
+        ResponseParserPtr & /*parser*/) {
+    throw ApiError("Anthropic does not support tool use");
 }
 
 // ---------------------------------------------------------------------------
@@ -120,44 +163,6 @@ nlohmann::json AnthropicProvider::_build_request(
 
     req["messages"] = msg_array;
     return req;
-}
-
-std::string AnthropicProvider::_extract_content(const std::string &response_json) const {
-    try {
-        auto j = nlohmann::json::parse(response_json);
-
-        if (j.contains("error")) {
-            auto &err = j["error"];
-            throw ApiError(err.value("message", response_json));
-        }
-
-        return j.at("content").at(0).at("text").get<std::string>();
-    } catch (const Error &) {
-        throw;
-    } catch (const nlohmann::json::exception &e) {
-        throw ParseError(std::string("Anthropic response parse error: ") + e.what()
-                + " | body: " + response_json);
-    }
-}
-
-std::string AnthropicProvider::_extract_sse_token(const std::string &data_line) const {
-    try {
-        auto j = nlohmann::json::parse(data_line);
-
-        // Only "content_block_delta" events carry text.
-        if (j.value("type", "") != "content_block_delta") {
-            return "";
-        }
-
-        const auto &delta = j["delta"];
-        if (delta.value("type", "") != "text_delta") {
-            return "";
-        }
-
-        return delta.value("text", "");
-    } catch (const nlohmann::json::exception &) {
-        return "";
-    }
 }
 
 } // namespace sw::sac

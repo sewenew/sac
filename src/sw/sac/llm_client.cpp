@@ -56,21 +56,37 @@ LlmClient::LlmClient(std::unique_ptr<LlmProvider> provider, HttpClient &http)
 }
 
 std::string LlmClient::chat(const std::vector<Message> &messages) {
-    return _provider->chat(messages, _http);
+    ResponseParserPtr parser;
+    auto req = _provider->build_chat_request(messages, parser);
+    auto response = _http.post(req.url, req.headers, req.body);
+    auto *chat_parser = dynamic_cast<ChatResponseParser *>(parser.get());
+    assert(chat_parser != nullptr);
+    return chat_parser->parse(response);
 }
 
 void LlmClient::chat_stream(const std::vector<Message> &messages, StreamCallback callback) {
-    _provider->chat_stream(messages, _http, std::move(callback));
-}
-
-std::vector<float> LlmClient::embed(const std::string &text) {
-    return _provider->embed(text, _http);
+    ResponseParserPtr parser;
+    auto req = _provider->build_chat_stream_request(messages, parser);
+    auto *stream_parser = dynamic_cast<StreamResponseParser *>(parser.get());
+    assert(stream_parser != nullptr);
+    _http.post_sse(req.url, req.headers, req.body,
+            [stream_parser, callback](const std::string &data_line) {
+                auto token = stream_parser->parse_sse_token(data_line);
+                if (!token.empty()) {
+                    callback(token);
+                }
+            });
 }
 
 Message LlmClient::chat_with_tools(
         const std::vector<Message> &messages,
         const std::vector<ToolDef> &tools) {
-    return _provider->chat_with_tools(messages, tools, _http);
+    ResponseParserPtr parser;
+    auto req = _provider->build_chat_with_tools_request(messages, tools, parser);
+    auto response = _http.post(req.url, req.headers, req.body);
+    auto *tool_parser = dynamic_cast<ToolResponseParser *>(parser.get());
+    assert(tool_parser != nullptr);
+    return tool_parser->parse(response);
 }
 
 } // namespace sw::sac

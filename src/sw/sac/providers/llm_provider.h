@@ -18,23 +18,59 @@
 #define SEWENEW_SAC_PROVIDER_LLM_PROVIDER_H
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "sw/sac/http_client.h"
+
 namespace sw::sac {
 
-class HttpClient;
 struct Message;
 struct ToolDef;
 
 using StreamCallback = std::function<void(const std::string &token)>;
 
+// Request bundle returned by a provider for a given operation.
+struct ProviderRequest {
+    std::string url;
+    HeaderMap headers;
+    std::string body;
+};
+
+// Response parser interface — providers implement this to turn raw HTTP
+// response bodies into domain objects.
+class ResponseParser {
+public:
+    virtual ~ResponseParser() = default;
+};
+
+using ResponseParserPtr = std::unique_ptr<ResponseParser>;
+
+// Parser for blocking chat responses.
+class ChatResponseParser : public ResponseParser {
+public:
+    virtual std::string parse(const std::string &response_body) = 0;
+};
+
+// Parser for streaming chat responses.
+class StreamResponseParser : public ResponseParser {
+public:
+    // Called for each SSE data line. Returns the token (may be empty).
+    virtual std::string parse_sse_token(const std::string &data_line) = 0;
+};
+
+// Parser for tool-augmented chat responses.
+class ToolResponseParser : public ResponseParser {
+public:
+    virtual Message parse(const std::string &response_body) = 0;
+};
+
 // Strategy interface for LLM providers.
 // Each concrete implementation knows how to:
-//   - serialise messages to a provider-specific JSON request body
-//   - set the correct auth headers
-//   - parse the provider-specific response
-// It does NOT own an HttpClient; LlmClient passes one in.
+//   - build a provider-specific request (URL, headers, body)
+//   - create a parser that can interpret the response
+// The actual HTTP call is made by LlmClient.
 class LlmProvider {
 public:
     LlmProvider() = default;
@@ -42,28 +78,24 @@ public:
     LlmProvider &operator=(const LlmProvider &) = delete;
     virtual ~LlmProvider() = default;
 
-    // Blocking chat. Returns the assistant reply text.
-    virtual std::string chat(
+    // Build a blocking chat request. The returned parser can extract the reply
+    // text from the response body via parse_chat_response().
+    virtual ProviderRequest build_chat_request(
             const std::vector<Message> &messages,
-            HttpClient &http) = 0;
+            ResponseParserPtr &parser) = 0;
 
-    // Streaming chat. callback receives successive tokens as they arrive.
-    virtual void chat_stream(
+    // Build a streaming chat request. The returned parser can extract tokens
+    // from SSE data lines via parse_sse_token().
+    virtual ProviderRequest build_chat_stream_request(
             const std::vector<Message> &messages,
-            HttpClient &http,
-            StreamCallback callback) = 0;
-
-    // Blocking embedding. Returns the embedding vector.
-    virtual std::vector<float> embed(
-            const std::string &text,
-            HttpClient &http) = 0;
+            ResponseParserPtr &parser) = 0;
 
     // One tool-augmented turn. Returns the assistant Message (content or tool_calls).
     // Providers that do not support tool use should override and throw ApiError.
-    virtual Message chat_with_tools(
+    virtual ProviderRequest build_chat_with_tools_request(
             const std::vector<Message> &messages,
             const std::vector<ToolDef> &tools,
-            HttpClient &http);
+            ResponseParserPtr &parser) = 0;
 };
 
 } // namespace sw::sac

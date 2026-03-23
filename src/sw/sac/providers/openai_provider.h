@@ -12,7 +12,7 @@
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
- *************************************************************************/
+*************************************************************************/
 
 #ifndef SEWENEW_SAC_PROVIDER_OPENAI_PROVIDER_H
 #define SEWENEW_SAC_PROVIDER_OPENAI_PROVIDER_H
@@ -22,7 +22,6 @@
 
 #include "nlohmann/json.hpp"
 
-#include "sw/sac/http_client.h"
 #include "sw/sac/llm_client.h"
 #include "sw/sac/providers/llm_provider.h"
 
@@ -39,7 +38,6 @@ struct OpenAiOptions {
 // api_key, and model differ.
 //
 // Chat endpoint:      <base_url>/chat/completions
-// Embedding endpoint: <base_url>/embeddings
 class OpenAiProvider : public LlmProvider {
 public:
     explicit OpenAiProvider(const OpenAiOptions &opts);
@@ -49,23 +47,18 @@ public:
 
     ~OpenAiProvider() override = default;
 
-    std::string chat(
+    ProviderRequest build_chat_request(
             const std::vector<Message> &messages,
-            HttpClient &http) override;
+            ResponseParserPtr &parser) override;
 
-    void chat_stream(
+    ProviderRequest build_chat_stream_request(
             const std::vector<Message> &messages,
-            HttpClient &http,
-            StreamCallback callback) override;
+            ResponseParserPtr &parser) override;
 
-    std::vector<float> embed(
-            const std::string &text,
-            HttpClient &http) override;
-
-    Message chat_with_tools(
+    ProviderRequest build_chat_with_tools_request(
             const std::vector<Message> &messages,
             const std::vector<ToolDef> &tools,
-            HttpClient &http) override;
+            ResponseParserPtr &parser) override;
 
 private:
     // Returns {"Authorization": "Bearer <key>", "Content-Type": "application/json"}.
@@ -73,16 +66,6 @@ private:
 
     nlohmann::json _build_chat_request(
             const std::vector<Message> &messages, bool stream) const;
-
-    nlohmann::json _build_embed_request(const std::string &text) const;
-
-    std::string _extract_content(const std::string &response_json) const;
-
-    // Returns the incremental token from one SSE data line, or "" if the chunk
-    // carries no text (role-only / finish_reason chunks).
-    std::string _extract_sse_token(const std::string &data_line) const;
-
-    std::vector<float> _extract_embedding(const std::string &response_json) const;
 
     OpenAiOptions _opts;
 };

@@ -12,7 +12,7 @@
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
- *************************************************************************/
+*************************************************************************/
 
 #ifndef SEWENEW_SAC_PROVIDER_ANTHROPIC_PROVIDER_H
 #define SEWENEW_SAC_PROVIDER_ANTHROPIC_PROVIDER_H
@@ -22,7 +22,6 @@
 
 #include "nlohmann/json.hpp"
 
-#include "sw/sac/http_client.h"
 #include "sw/sac/llm_client.h"
 #include "sw/sac/providers/llm_provider.h"
 
@@ -36,7 +35,6 @@ struct AnthropicOptions {
 
 // Anthropic Messages API.
 // Chat endpoint: <base_url>/messages  (default base_url: https://api.anthropic.com/v1)
-// Embedding:     not supported — embed() throws ApiError.
 //
 // Wire format differences from OpenAI:
 //   - Auth: "x-api-key" header + "anthropic-version" header (no "Authorization: Bearer")
@@ -55,19 +53,19 @@ public:
 
     ~AnthropicProvider() override = default;
 
-    std::string chat(
+    ProviderRequest build_chat_request(
             const std::vector<Message> &messages,
-            HttpClient &http) override;
+            ResponseParserPtr &parser) override;
 
-    void chat_stream(
+    ProviderRequest build_chat_stream_request(
             const std::vector<Message> &messages,
-            HttpClient &http,
-            StreamCallback callback) override;
+            ResponseParserPtr &parser) override;
 
-    // Anthropic does not expose an embeddings endpoint.
-    [[noreturn]] std::vector<float> embed(
-            const std::string &text,
-            HttpClient &http) override;
+    // Anthropic does not support tool use.
+    ProviderRequest build_chat_with_tools_request(
+            const std::vector<Message> &messages,
+            const std::vector<ToolDef> &tools,
+            ResponseParserPtr &parser) override;
 
 private:
     // Returns {"x-api-key": ..., "anthropic-version": ..., "Content-Type": ...}.
@@ -77,12 +75,6 @@ private:
     // go into the "messages" array.
     nlohmann::json _build_request(
             const std::vector<Message> &messages, bool stream) const;
-
-    std::string _extract_content(const std::string &response_json) const;
-
-    // Returns the incremental token from one SSE data line, or "" if the event
-    // is not of type "content_block_delta".
-    std::string _extract_sse_token(const std::string &data_line) const;
 
     AnthropicOptions _opts;
 };
