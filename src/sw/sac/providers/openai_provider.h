@@ -48,17 +48,20 @@ public:
     ~OpenAiProvider() override = default;
 
     ProviderRequest build_chat_request(
-            const std::vector<Message> &messages,
-            ResponseParserPtr &parser) override;
+            const std::vector<Message> &messages) override;
 
     ProviderRequest build_chat_stream_request(
-            const std::vector<Message> &messages,
-            ResponseParserPtr &parser) override;
+            const std::vector<Message> &messages) override;
 
     ProviderRequest build_chat_with_tools_request(
             const std::vector<Message> &messages,
-            const std::vector<ToolDef> &tools,
-            ResponseParserPtr &parser) override;
+            const std::vector<ToolDef> &tools) override;
+
+    std::string parse_chat_response(const std::string &response_body) override;
+
+    std::string parse_chat_stream_response(const std::string &data_line) override;
+
+    Message parse_tool_response(const std::string &response_body) override;
 
 private:
     // Returns {"Authorization": "Bearer <key>", "Content-Type": "application/json"}.

@@ -56,22 +56,16 @@ LlmClient::LlmClient(std::unique_ptr<LlmProvider> provider, HttpClient &http)
 }
 
 std::string LlmClient::chat(const std::vector<Message> &messages) {
-    ResponseParserPtr parser;
-    auto req = _provider->build_chat_request(messages, parser);
+    auto req = _provider->build_chat_request(messages);
     auto response = _http.post(req.url, req.headers, req.body);
-    auto *chat_parser = dynamic_cast<ChatResponseParser *>(parser.get());
-    assert(chat_parser != nullptr);
-    return chat_parser->parse(response);
+    return _provider->parse_chat_response(response);
 }
 
 void LlmClient::chat_stream(const std::vector<Message> &messages, StreamCallback callback) {
-    ResponseParserPtr parser;
-    auto req = _provider->build_chat_stream_request(messages, parser);
-    auto *stream_parser = dynamic_cast<StreamResponseParser *>(parser.get());
-    assert(stream_parser != nullptr);
+    auto req = _provider->build_chat_stream_request(messages);
     _http.post_sse(req.url, req.headers, req.body,
-            [stream_parser, callback](const std::string &data_line) {
-                auto token = stream_parser->parse_sse_token(data_line);
+            [this, callback](const std::string &data_line) {
+                auto token = _provider->parse_chat_stream_response(data_line);
                 if (!token.empty()) {
                     callback(token);
                 }
@@ -81,12 +75,9 @@ void LlmClient::chat_stream(const std::vector<Message> &messages, StreamCallback
 Message LlmClient::chat_with_tools(
         const std::vector<Message> &messages,
         const std::vector<ToolDef> &tools) {
-    ResponseParserPtr parser;
-    auto req = _provider->build_chat_with_tools_request(messages, tools, parser);
+    auto req = _provider->build_chat_with_tools_request(messages, tools);
     auto response = _http.post(req.url, req.headers, req.body);
-    auto *tool_parser = dynamic_cast<ToolResponseParser *>(parser.get());
-    assert(tool_parser != nullptr);
-    return tool_parser->parse(response);
+    return _provider->parse_tool_response(response);
 }
 
 } // namespace sw::sac

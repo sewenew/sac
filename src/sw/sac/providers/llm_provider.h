@@ -38,38 +38,10 @@ struct ProviderRequest {
     std::string body;
 };
 
-// Response parser interface — providers implement this to turn raw HTTP
-// response bodies into domain objects.
-class ResponseParser {
-public:
-    virtual ~ResponseParser() = default;
-};
-
-using ResponseParserPtr = std::unique_ptr<ResponseParser>;
-
-// Parser for blocking chat responses.
-class ChatResponseParser : public ResponseParser {
-public:
-    virtual std::string parse(const std::string &response_body) = 0;
-};
-
-// Parser for streaming chat responses.
-class StreamResponseParser : public ResponseParser {
-public:
-    // Called for each SSE data line. Returns the token (may be empty).
-    virtual std::string parse_sse_token(const std::string &data_line) = 0;
-};
-
-// Parser for tool-augmented chat responses.
-class ToolResponseParser : public ResponseParser {
-public:
-    virtual Message parse(const std::string &response_body) = 0;
-};
-
 // Strategy interface for LLM providers.
 // Each concrete implementation knows how to:
 //   - build a provider-specific request (URL, headers, body)
-//   - create a parser that can interpret the response
+//   - parse the response body into domain objects
 // The actual HTTP call is made by LlmClient.
 class LlmProvider {
 public:
@@ -78,24 +50,29 @@ public:
     LlmProvider &operator=(const LlmProvider &) = delete;
     virtual ~LlmProvider() = default;
 
-    // Build a blocking chat request. The returned parser can extract the reply
-    // text from the response body via parse_chat_response().
+    // Build a blocking chat request.
     virtual ProviderRequest build_chat_request(
-            const std::vector<Message> &messages,
-            ResponseParserPtr &parser) = 0;
+            const std::vector<Message> &messages) = 0;
 
-    // Build a streaming chat request. The returned parser can extract tokens
-    // from SSE data lines via parse_sse_token().
+    // Build a streaming chat request.
     virtual ProviderRequest build_chat_stream_request(
-            const std::vector<Message> &messages,
-            ResponseParserPtr &parser) = 0;
+            const std::vector<Message> &messages) = 0;
 
-    // One tool-augmented turn. Returns the assistant Message (content or tool_calls).
+    // Build a tool-augmented chat request.
     // Providers that do not support tool use should override and throw ApiError.
     virtual ProviderRequest build_chat_with_tools_request(
             const std::vector<Message> &messages,
-            const std::vector<ToolDef> &tools,
-            ResponseParserPtr &parser) = 0;
+            const std::vector<ToolDef> &tools) = 0;
+
+    // Parse a blocking chat response.
+    virtual std::string parse_chat_response(const std::string &response_body) = 0;
+
+    // Parse a streaming chat response (single SSE data line).
+    virtual std::string parse_chat_stream_response(const std::string &data_line) = 0;
+
+    // Parse a tool-augmented chat response.
+    // Providers that do not support tool use should override and throw ApiError.
+    virtual Message parse_tool_response(const std::string &response_body) = 0;
 };
 
 } // namespace sw::sac

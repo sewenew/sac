@@ -92,87 +92,6 @@ nlohmann::json tools_to_json(const std::vector<ToolDef> &tools) {
     return arr;
 }
 
-// Parser for blocking chat responses.
-class OpenAiChatParser : public ChatResponseParser {
-public:
-    std::string parse(const std::string &response_body) override {
-        try {
-            auto j = nlohmann::json::parse(response_body);
-
-            if (j.contains("error")) {
-                throw ApiError(j["error"].value("message", response_body));
-            }
-
-            return j.at("choices").at(0).at("message").at("content").get<std::string>();
-        } catch (const Error &) {
-            throw;
-        } catch (const nlohmann::json::exception &e) {
-            throw ParseError(std::string("OpenAI response parse error: ") + e.what()
-                    + " | body: " + response_body);
-        }
-    }
-};
-
-// Parser for streaming chat responses.
-class OpenAiStreamParser : public StreamResponseParser {
-public:
-    std::string parse_sse_token(const std::string &data_line) override {
-        try {
-            auto j = nlohmann::json::parse(data_line);
-
-            if (!j.contains("choices") || j["choices"].empty()) {
-                return "";
-            }
-
-            const auto &delta = j["choices"][0]["delta"];
-            if (!delta.contains("content") || delta["content"].is_null()) {
-                return "";
-            }
-
-            return delta["content"].get<std::string>();
-        } catch (const nlohmann::json::exception &) {
-            // Malformed SSE chunk — skip silently rather than aborting the stream.
-            return "";
-        }
-    }
-};
-
-// Parser for tool-augmented chat responses.
-class OpenAiToolParser : public ToolResponseParser {
-public:
-    Message parse(const std::string &response_body) override {
-        try {
-            auto j = nlohmann::json::parse(response_body);
-
-            if (j.contains("error")) {
-                throw ApiError(j["error"].value("message", response_body));
-            }
-
-            const auto &msg = j.at("choices").at(0).at("message");
-            Message result;
-            result.role = Role::ASSISTANT;
-            result.content = msg.value("content", "");
-
-            if (msg.contains("tool_calls") && !msg["tool_calls"].is_null()) {
-                for (const auto &tc : msg["tool_calls"]) {
-                    ToolCall call;
-                    call.id = tc.at("id").get<std::string>();
-                    call.name = tc.at("function").at("name").get<std::string>();
-                    call.arguments = tc.at("function").at("arguments").get<std::string>();
-                    result.tool_calls.push_back(std::move(call));
-                }
-            }
-
-            return result;
-        } catch (const Error &) {
-            throw;
-        } catch (const nlohmann::json::exception &e) {
-            throw ParseError(std::string("OpenAI tool-call parse error: ") + e.what()
-                    + " | body: " + response_body);
-        }
-    }
-};
-
 } // namespace
 
 OpenAiProvider::OpenAiProvider(const OpenAiOptions &opts) : _opts(opts) {}
@@ -182,9 +101,7 @@ OpenAiProvider::OpenAiProvider(const OpenAiOptions &opts) : _opts(opts) {}
 // ---------------------------------------------------------------------------
 
 ProviderRequest OpenAiProvider::build_chat_request(
-        const std::vector<Message> &messages,
-        ResponseParserPtr &parser) {
-    parser = std::make_unique<OpenAiChatParser>();
+        const std::vector<Message> &messages) {
     return {
         _opts.base_url + "/chat/completions",
         _auth_headers(),
@@ -192,19 +109,54 @@ ProviderRequest OpenAiProvider::build_chat_request(
     };
 }
 
+std::string OpenAiProvider::parse_chat_response(const std::string &response_body) {
+    try {
+        auto j = nlohmann::json::parse(response_body);
+
+        if (j.contains("error")) {
+            throw ApiError(j["error"].value("message", response_body));
+        }
+
+        return j.at("choices").at(0).at("message").at("content").get<std::string>();
+    } catch (const Error &) {
+        throw;
+    } catch (const nlohmann::json::exception &e) {
+        throw ParseError(std::string("OpenAI response parse error: ") + e.what()
+                + " | body: " + response_body);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // chat_stream — SSE
 // ---------------------------------------------------------------------------
 
 ProviderRequest OpenAiProvider::build_chat_stream_request(
-        const std::vector<Message> &messages,
-        ResponseParserPtr &parser) {
-    parser = std::make_unique<OpenAiStreamParser>();
+        const std::vector<Message> &messages) {
     return {
         _opts.base_url + "/chat/completions",
         _auth_headers(),
         _build_chat_request(messages, true).dump()
     };
+}
+
+std::string OpenAiProvider::parse_chat_stream_response(const std::string &data_line) {
+    try {
+        auto j = nlohmann::json::parse(data_line);
+
+        if (!j.contains("choices") || j["choices"].empty()) {
+            return "";
+        }
+
+        const auto &delta = j["choices"][0]["delta"];
+        if (!delta.contains("content") || delta["content"].is_null()) {
+            return "";
+        }
+
+        return delta["content"].get<std::string>();
+    } catch (const nlohmann::json::exception &) {
+        // Malformed SSE chunk — skip silently rather than aborting the stream.
+        return "";
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -213,10 +165,7 @@ ProviderRequest OpenAiProvider::build_chat_stream_request(
 
 ProviderRequest OpenAiProvider::build_chat_with_tools_request(
         const std::vector<Message> &messages,
-        const std::vector<ToolDef> &tools,
-        ResponseParserPtr &parser) {
-    parser = std::make_unique<OpenAiToolParser>();
-
+        const std::vector<ToolDef> &tools) {
     nlohmann::json msg_array = nlohmann::json::array();
     for (const auto &m : messages) {
         msg_array.push_back(message_to_json(m));
@@ -234,6 +183,38 @@ ProviderRequest OpenAiProvider::build_chat_with_tools_request(
         _auth_headers(),
         req.dump()
     };
+}
+
+Message OpenAiProvider::parse_tool_response(const std::string &response_body) {
+    try {
+        auto j = nlohmann::json::parse(response_body);
+
+        if (j.contains("error")) {
+            throw ApiError(j["error"].value("message", response_body));
+        }
+
+        const auto &msg = j.at("choices").at(0).at("message");
+        Message result;
+        result.role = Role::ASSISTANT;
+        result.content = msg.value("content", "");
+
+        if (msg.contains("tool_calls") && !msg["tool_calls"].is_null()) {
+            for (const auto &tc : msg["tool_calls"]) {
+                ToolCall call;
+                call.id = tc.at("id").get<std::string>();
+                call.name = tc.at("function").at("name").get<std::string>();
+                call.arguments = tc.at("function").at("arguments").get<std::string>();
+                result.tool_calls.push_back(std::move(call));
+            }
+        }
+
+        return result;
+    } catch (const Error &) {
+        throw;
+    } catch (const nlohmann::json::exception &e) {
+        throw ParseError(std::string("OpenAI tool-call parse error: ") + e.what()
+                + " | body: " + response_body);
+    }
 }
 
 // ---------------------------------------------------------------------------
