@@ -21,29 +21,22 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "http_client.h"
 #include "sw/sac/errors.h"
 
 namespace sw::sac {
 
-// ---------------------------------------------------------------------------
-// CurlHandleDeleter / CurlListDeleter
-// ---------------------------------------------------------------------------
-
-void CurlHttpClient::CurlHandleDeleter::operator()(void *handle) const noexcept {
-    if (handle != nullptr) {
-        curl_easy_cleanup(static_cast<CURL *>(handle));
+void HttpConnection::CurlDeleter::operator()(void *c) {
+    if (c != nullptr) {
+        curl_easy_cleanup(static_cast<CURL *>(c));
     }
 }
 
-void CurlHttpClient::CurlListDeleter::operator()(::curl_slist *list) const noexcept {
-    if (list != nullptr) {
-        curl_slist_free_all(list);
+HttpConnectionHandle::~HttpConnectionHandle() noexcept {
+    if (_pool && _connection) {
+        _pool->release(std::move(_connection));
     }
 }
-
-// ---------------------------------------------------------------------------
-// CurlInit (libcurl global init)
-// ---------------------------------------------------------------------------
 
 class CurlInit {
 public:
@@ -56,9 +49,18 @@ public:
     }
 };
 
-// ---------------------------------------------------------------------------
-// HttpConnectionPool
-// ---------------------------------------------------------------------------
+HttpConnection::HttpConnection(void *c) :
+    _curl(c),
+    _create_time(std::chrono::steady_clock::now()),
+    _last_active_time(_create_time) {
+    if (_curl == nullptr) {
+        throw HttpError(0, "cannot create HttpConnection with null curl");
+    }
+}
+
+void HttpConnection::_touch() {
+    _last_active_time = std::chrono::steady_clock::now();
+}
 
 HttpConnectionPool::HttpConnectionPool(
         const PoolKey &key,
@@ -69,49 +71,39 @@ HttpConnectionPool::HttpConnectionPool(
     }
 }
 
-HttpConnectionPool::~HttpConnectionPool() {
-    // Cleanup all CURL handles in the pool
-    for (auto *curl : _pool) {
-        if (curl != nullptr) {
-            curl_easy_cleanup(static_cast<CURL *>(curl));
-        }
-    }
-}
-
-void *HttpConnectionPool::fetch() {
+HttpConnectionUPtr HttpConnectionPool::fetch() {
     std::unique_lock<std::mutex> lock(_mutex);
 
-    auto curl = _fetch(lock);
+    auto c = _fetch(lock);
+
+    assert(c);
 
     lock.unlock();
 
-    if (_need_reconnect(curl)) {
-        // Connection is expired, cleanup and create new
+    if (_need_reconnect(c.get())) {
         auto new_curl = curl_easy_init();
         if (new_curl == nullptr) {
-            release(curl);
+            release(std::move(c));
             throw HttpError(0, "curl_easy_init() failed");
         }
-        curl_easy_cleanup(static_cast<CURL *>(curl));
-        curl = new_curl;
+        c = std::make_unique<HttpConnection>(new_curl);
     }
 
-    return curl;
+    return c;
 }
 
-void *HttpConnectionPool::_fetch(std::unique_lock<std::mutex> &lock) {
+HttpConnectionUPtr HttpConnectionPool::_fetch(std::unique_lock<std::mutex> &lock) {
     if (_pool.empty()) {
         if (_used_connections == _pool_opts.size) {
             _wait_for_connection(lock);
         } else {
-            ++_used_connections;
-
             // Lazily create a new connection.
-            auto curl = curl_easy_init();
-            if (curl == nullptr) {
+            auto c = curl_easy_init();
+            if (c == nullptr) {
                 throw HttpError(0, "curl_easy_init() failed");
             }
-            return curl;
+            ++_used_connections;
+            return std::make_unique<HttpConnection>(c);
         }
     }
 
@@ -119,13 +111,13 @@ void *HttpConnectionPool::_fetch(std::unique_lock<std::mutex> &lock) {
     return _fetch_from_pool();
 }
 
-void *HttpConnectionPool::_fetch_from_pool() {
+HttpConnectionUPtr HttpConnectionPool::_fetch_from_pool() {
     assert(!_pool.empty());
 
-    auto curl = _pool.front();
+    auto c = std::move(_pool.front());
     _pool.pop_front();
 
-    return curl;
+    return c;
 }
 
 void HttpConnectionPool::_wait_for_connection(std::unique_lock<std::mutex> &lock) {
@@ -141,47 +133,40 @@ void HttpConnectionPool::_wait_for_connection(std::unique_lock<std::mutex> &lock
     }
 }
 
-void HttpConnectionPool::release(void *curl) {
-    if (curl == nullptr) {
+void HttpConnectionPool::release(HttpConnectionUPtr &&conn) {
+    if (!conn) {
         return;
     }
 
     {
         std::lock_guard<std::mutex> lock(_mutex);
-        _pool.push_back(curl);
+        _pool.push_back(std::move(conn));
     }
 
     _cv.notify_one();
 }
 
-void *HttpConnectionPool::create() {
-    auto curl = curl_easy_init();
-    if (curl == nullptr) {
-        throw HttpError(0, "curl_easy_init() failed");
+bool HttpConnectionPool::_need_reconnect(HttpConnection *conn) const {
+    if (_pool_opts.connection_lifetime > std::chrono::milliseconds(0)) {
+        if (std::chrono::steady_clock::now() - conn->create_time() > _pool_opts.connection_lifetime) {
+            return true;
+        }
     }
-    return curl;
-}
 
-bool HttpConnectionPool::_need_reconnect(void *curl) const {
-    // TODO: Track connection creation time and last active time
-    // to implement connection_lifetime and connection_idle_time checks.
-    // For now, always reuse the connection.
-    (void)curl;
+    if (_pool_opts.connection_idle_time > std::chrono::milliseconds(0)) {
+        if (std::chrono::steady_clock::now() - conn->last_active_time() > _pool_opts.connection_idle_time) {
+            return true;
+        }
+    }
+
     return false;
 }
 
-// ---------------------------------------------------------------------------
-// HttpConnectionHandle
-// ---------------------------------------------------------------------------
-
-HttpConnectionHandle::HttpConnectionHandle(HttpConnectionPool &pool)
-    : _pool(&pool), _curl(pool.fetch()) {
-    assert(_curl != nullptr);
+void CurlHttpClient::CurlListDeleter::operator()(::curl_slist *list) const noexcept {
+    if (list != nullptr) {
+        curl_slist_free_all(list);
+    }
 }
-
-// ---------------------------------------------------------------------------
-// CurlHttpClient
-// ---------------------------------------------------------------------------
 
 CurlHttpClient::CurlHttpClient(const HttpConnectionPoolOptions &pool_opts)
     : _pool_opts(pool_opts) {
@@ -385,7 +370,7 @@ void CurlHttpClient::post_sse(
 // _check_result
 // ---------------------------------------------------------------------------
 
-void CurlHttpClient::_check_result(void *curl, int curl_code,
+void CurlHttpClient::_check_result(void *conn, int curl_code,
                                    const std::string &url) const {
     if (curl_code != CURLE_OK) {
         throw HttpError(0,
@@ -394,7 +379,7 @@ void CurlHttpClient::_check_result(void *curl, int curl_code,
     }
 
     long http_code = 0;
-    curl_easy_getinfo(static_cast<CURL *>(curl), CURLINFO_RESPONSE_CODE, &http_code);
+    curl_easy_getinfo(static_cast<CURL *>(conn), CURLINFO_RESPONSE_CODE, &http_code);
     if (http_code < 200 || http_code >= 300) {
         throw HttpError(http_code,
                 "HTTP " + std::to_string(http_code) + " from " + url);

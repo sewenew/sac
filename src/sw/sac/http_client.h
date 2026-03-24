@@ -72,9 +72,46 @@ struct PoolKeyHash {
 };
 
 // Forward declaration
+class HttpConnection;
 class HttpConnectionPool;
 
+using HttpConnectionUPtr = std::unique_ptr<HttpConnection>;
 using HttpConnectionPoolSPtr = std::shared_ptr<HttpConnectionPool>;
+
+class HttpConnection {
+public:
+    explicit HttpConnection(void *curl);
+    ~HttpConnection() = default;
+
+    HttpConnection(HttpConnection &&) = default;
+    HttpConnection& operator=(HttpConnection &&) = default;
+    HttpConnection(const HttpConnection &) = delete;
+    HttpConnection& operator=(const HttpConnection &) = delete;
+
+    void* get() const noexcept {
+        return _curl.get();
+    }
+
+    std::chrono::steady_clock::time_point last_active_time() const noexcept {
+        return _last_active_time;
+    }
+
+    std::chrono::steady_clock::time_point create_time() const noexcept {
+        return _create_time;
+    }
+
+private:
+    void _touch();
+
+    struct CurlDeleter {
+        void operator()(void *c);
+    };
+    using CurlUPtr = std::unique_ptr<void, CurlDeleter>;
+
+    CurlUPtr _curl;
+    std::chrono::steady_clock::time_point _create_time{};
+    std::chrono::steady_clock::time_point _last_active_time{};
+};
 
 // Thread-safe pool of reusable CURL connections.
 class HttpConnectionPool {
@@ -85,34 +122,30 @@ public:
     HttpConnectionPool(const HttpConnectionPool &) = delete;
     HttpConnectionPool &operator=(const HttpConnectionPool &) = delete;
 
-    ~HttpConnectionPool();
+    ~HttpConnectionPool() = default;
 
-    // Fetch a CURL handle from the pool.
-    // Blocks if the pool is empty and max connections are in use.
-    // The returned handle must be released via release().
-    void *fetch();
+    HttpConnectionUPtr fetch();
 
     // Release a CURL handle back to the pool.
-    void release(void *curl);
-
-    // Create a new connection (not from the pool).
-    void *create();
+    void release(HttpConnectionUPtr &&connection);
 
     const PoolKey &key() const noexcept { return _key; }
 
 private:
-    void *_fetch(std::unique_lock<std::mutex> &lock);
+    HttpConnectionUPtr _fetch(std::unique_lock<std::mutex> &lock);
 
-    void *_fetch_from_pool();
+    HttpConnectionUPtr _fetch_from_pool();
 
     void _wait_for_connection(std::unique_lock<std::mutex> &lock);
 
-    bool _need_reconnect(void *curl) const;
+    bool _need_reconnect(HttpConnection *conn) const;
 
     PoolKey _key;
+
     HttpConnectionPoolOptions _pool_opts;
 
-    std::deque<void *> _pool;  // Available CURL handles
+    std::deque<HttpConnectionUPtr> _pool;
+    
     std::size_t _used_connections = 0;
 
     std::mutex _mutex;
@@ -122,22 +155,21 @@ private:
 // RAII wrapper for fetching and releasing a connection from the pool.
 class HttpConnectionHandle {
 public:
-    explicit HttpConnectionHandle(HttpConnectionPool &pool);
+    explicit HttpConnectionHandle(HttpConnectionPool &pool) :
+        _pool(&pool), _connection(pool.fetch()) {
+        assert(_connection != nullptr);
+    }
 
     HttpConnectionHandle(const HttpConnectionHandle &) = delete;
     HttpConnectionHandle &operator=(const HttpConnectionHandle &) = delete;
 
-    ~HttpConnectionHandle() {
-        if (_pool && _curl) {
-            _pool->release(_curl);
-        }
-    }
+    ~HttpConnectionHandle() noexcept;
 
-    void *get() const noexcept { return _curl; }
+    void* get() const noexcept { return _connection->get(); }
 
 private:
     HttpConnectionPool *_pool = nullptr;
-    void *_curl = nullptr;
+    HttpConnectionUPtr _connection = nullptr;
 };
 
 // Abstract base — callers depend only on this interface.
@@ -193,21 +225,16 @@ public:
     void set_proxy(const std::string &proxy_url) { _proxy_url = proxy_url; }
 
 private:
-    struct CurlHandleDeleter {
-        void operator()(void *handle) const noexcept;
-    };
-    using CurlHandleUPtr = std::unique_ptr<void, CurlHandleDeleter>;
-
-    struct CurlListDeleter {
-        void operator()(::curl_slist *list) const noexcept;
-    };
-    using CurlListUPtr = std::unique_ptr<::curl_slist, CurlListDeleter>;
-
     // SSE parser state passed as libcurl WRITEFUNCTION userdata.
     struct SseState {
         std::string buffer;
         SseCallback callback;
     };
+
+    struct CurlListDeleter {
+        void operator()(::curl_slist *list) const noexcept;
+    };
+    using CurlListUPtr = std::unique_ptr<::curl_slist, CurlListDeleter>;
 
     // Extract scheme://host:port from a full URL.
     static std::string _extract_url_base(const std::string &url);
