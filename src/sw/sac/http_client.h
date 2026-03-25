@@ -17,6 +17,7 @@
 #ifndef SEWENEW_SAC_HTTP_CLIENT_H
 #define SEWENEW_SAC_HTTP_CLIENT_H
 
+#include <cassert>
 #include <chrono>
 #include <condition_variable>
 #include <deque>

@@ -42,6 +42,7 @@ struct AnthropicOptions {
 //   - max_tokens is required
 //   - Non-stream response: content[0].text
 //   - SSE delta event type: "content_block_delta" with delta.text
+//   - Tool use: content blocks with type "tool_use" (assistant) and "tool_result" (user)
 class AnthropicProvider : public LlmProvider {
 public:
     static constexpr int DEFAULT_MAX_TOKENS = 4096;
@@ -59,7 +60,6 @@ public:
     ProviderRequest build_chat_stream_request(
             const std::vector<Message> &messages) override;
 
-    // Anthropic does not support tool use.
     ProviderRequest build_chat_with_tools_request(
             const std::vector<Message> &messages,
             const std::vector<ToolDef> &tools) override;
@@ -68,7 +68,6 @@ public:
 
     std::string parse_chat_stream_response(const std::string &data_line) override;
 
-    // Anthropic does not support tool use.
     Message parse_tool_response(const std::string &response_body) override;
 
 private:
