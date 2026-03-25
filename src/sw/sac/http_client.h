@@ -253,7 +253,9 @@ private:
             const PoolKey &key);
 
     // Validates curl result and HTTP status; throws on error.
-    void _check_result(void *curl, int curl_code, const std::string &url) const;
+    void _check_result(void *curl, int curl_code,
+                       const std::string &url,
+                       const std::string &response) const;
 
     static size_t _write_callback(
             char *ptr, size_t size, size_t nmemb, void *userdata);

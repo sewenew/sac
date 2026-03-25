@@ -21,6 +21,7 @@
 #include "sw/sac/providers/anthropic_provider.h"
 #include "sw/sac/providers/llm_provider.h"
 #include "sw/sac/providers/openai_provider.h"
+#include "sw/sac/providers/moonshot_provider.h"
 
 namespace sw::sac {
 
@@ -40,8 +41,8 @@ std::unique_ptr<LlmProvider> make_ark_provider(const OpenAiOptions &opts) {
     return std::make_unique<OpenAiProvider>(opts);
 }
 
-std::unique_ptr<LlmProvider> make_kimi_provider(const OpenAiOptions &opts) {
-    return std::make_unique<OpenAiProvider>(opts);
+std::unique_ptr<LlmProvider> make_moonshot_provider(const MoonshotOptions &opts) {
+    return std::make_unique<MoonshotProvider>(opts);
 }
 
 // ---------------------------------------------------------------------------

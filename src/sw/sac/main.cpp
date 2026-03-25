@@ -19,10 +19,14 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
+#include "sw/sac/agent.h"
 #include "sw/sac/http_client.h"
 #include "sw/sac/llm_client.h"
 #include "sw/sac/errors.h"
 #include "sw/sac/providers/openai_provider.h"
+#include "sw/sac/providers/moonshot_provider.h"
 
 int main() {
     const char *api_key = std::getenv("OPENAI_API_KEY");
@@ -42,11 +46,32 @@ int main() {
     }
 
     sw::sac::CurlHttpClient http;
-    sw::sac::OpenAiOptions opts{base_url, api_key, model};
+    sw::sac::MoonshotOptions opts{base_url, api_key, model};
     sw::sac::LlmClient client(
-        sw::sac::make_openai_provider(opts),
+        sw::sac::make_moonshot_provider(opts),
         http);
 
+    sw::sac::Tool add_tool;
+    add_tool.def.name = "add";
+    add_tool.def.description = "add two numbers";
+    add_tool.def.parameters = {
+        {"a", "first number", "integer", true},
+        {"b", "second number", "integer", true},
+    };
+    add_tool.fn = [](const std::string &args_json) {
+        auto j = nlohmann::json::parse(args_json);
+        auto a = j.at("a").get<long long>();
+        auto b = j.at("b").get<long long>();
+        return std::to_string(a + b);
+    };
+    try {
+        sw::sac::Agent agent(client, {std::move(add_tool)}, 5);
+        std::cout << agent.run("compute 2 + 40") << std::endl;
+    } catch (const sw::sac::Error &e) {
+        std::cerr << e.what() << std::endl;
+    }
+
+    /*
     std::vector<sw::sac::Message> messages = {
         {sw::sac::Role::USER, "Say hello in one sentence."},
     };
@@ -67,6 +92,7 @@ int main() {
         std::cerr << e.what() << std::endl;
     }
     std::cout << "\n";
+    */
 
     return 0;
 }

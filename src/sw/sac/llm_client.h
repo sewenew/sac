@@ -30,6 +30,7 @@ class HttpClient;
 class LlmProvider;
 struct AnthropicOptions;
 struct OpenAiOptions;
+struct MoonshotOptions;
 
 enum class Role {
     SYSTEM,
@@ -50,6 +51,7 @@ struct Message {
     std::string content;
     std::vector<ToolCall> tool_calls;  // non-empty for ASSISTANT tool-call turns
     std::string tool_call_id;          // non-empty for TOOL role
+    std::string reasoning_content;     // Required by Kimi for assistant messages in tool calls
 };
 
 // A single parameter in a tool's JSON-Schema-style definition.
@@ -76,7 +78,7 @@ std::unique_ptr<LlmProvider> make_anthropic_provider(const AnthropicOptions &opt
 // OpenAI-compatible: also handles Volcengine ARK and Kimi via LlmConfig.
 std::unique_ptr<LlmProvider> make_openai_provider(const OpenAiOptions &opts);
 
-std::unique_ptr<LlmProvider> make_kimi_provider(const OpenAiOptions &opts);
+std::unique_ptr<LlmProvider> make_moonshot_provider(const MoonshotOptions &opts);
 
 std::unique_ptr<LlmProvider> make_ark_provider(const OpenAiOptions &opts);
 

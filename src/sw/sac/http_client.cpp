@@ -313,7 +313,7 @@ std::string CurlHttpClient::post(
 
     // Perform request
     CURLcode res = curl_easy_perform(static_cast<CURL *>(curl));
-    _check_result(curl, static_cast<int>(res), url);
+    _check_result(curl, static_cast<int>(res), url, response);
 
     // Connection is automatically released when handle goes out of scope
     return response;
@@ -363,7 +363,7 @@ void CurlHttpClient::post_sse(
 
     // Perform request
     CURLcode res = curl_easy_perform(static_cast<CURL *>(curl));
-    _check_result(curl, static_cast<int>(res), url);
+    _check_result(curl, static_cast<int>(res), url, state.buffer);
 }
 
 // ---------------------------------------------------------------------------
@@ -371,7 +371,8 @@ void CurlHttpClient::post_sse(
 // ---------------------------------------------------------------------------
 
 void CurlHttpClient::_check_result(void *conn, int curl_code,
-                                   const std::string &url) const {
+                                   const std::string &url,
+                                   const std::string &response) const {
     if (curl_code != CURLE_OK) {
         throw HttpError(0,
                 std::string("curl error for ") + url + ": " +
@@ -382,7 +383,8 @@ void CurlHttpClient::_check_result(void *conn, int curl_code,
     curl_easy_getinfo(static_cast<CURL *>(conn), CURLINFO_RESPONSE_CODE, &http_code);
     if (http_code < 200 || http_code >= 300) {
         throw HttpError(http_code,
-                "HTTP " + std::to_string(http_code) + " from " + url);
+                "HTTP " + std::to_string(http_code) + " from " + url +
+                ", response: " + response);
     }
 }
 
