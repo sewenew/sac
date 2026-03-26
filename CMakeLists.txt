@@ -22,6 +22,13 @@ add_library(sac_lib STATIC
     src/sw/sac/providers/anthropic_provider.cpp
     src/sw/sac/providers/openai_provider.cpp
     src/sw/sac/providers/moonshot_provider.cpp
+    src/sw/sac/tools/tools.cpp
+    src/sw/sac/tools/read.cpp
+    src/sw/sac/tools/write.cpp
+    src/sw/sac/tools/edit.cpp
+    src/sw/sac/tools/glob.cpp
+    src/sw/sac/tools/grep.cpp
+    src/sw/sac/tools/ls.cpp
 )
 
 target_include_directories(sac_lib PUBLIC src/)
