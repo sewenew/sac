@@ -22,6 +22,8 @@
 #include <string>
 #include <vector>
 
+#include "nlohmann/json.hpp"
+
 #include "sw/sac/http_client.h"
 
 namespace sw::sac {
@@ -74,6 +76,9 @@ public:
     // Providers that do not support tool use should override and throw ApiError.
     virtual Message parse_tool_response(const std::string &response_body) = 0;
 };
+
+std::string optional_json_string(const nlohmann::json &json,
+        const std::string &field);
 
 } // namespace sw::sac
 

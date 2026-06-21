@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "users": [
+    {
+      "user_id": "alice",
+      "open_id": "ou_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "tenant_key": "tenant_xxxxxxxxxxxxxxxx",
+      "roles": ["admin"],
+      "enabled": true
+    }
+  ],
+  "pending_pairings": []
+}

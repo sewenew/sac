@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+lark_permissions.json
+.lark_permissions.json.*.tmp
+lark-sidecar.log
+err
+*.swp

@@ -206,8 +206,8 @@ Message MoonshotProvider::parse_tool_response(const std::string &response_body) 
         const auto &msg = j.at("choices").at(0).at("message");
         Message result;
         result.role = Role::ASSISTANT;
-        result.content = msg.value("content", "");
-        result.reasoning_content = msg.value("reasoning_content", "");
+        result.content = optional_json_string(msg, "content");
+        result.reasoning_content = optional_json_string(msg, "reasoning_content");
 
         if (msg.contains("tool_calls") && !msg["tool_calls"].is_null()) {
             for (const auto &tc : msg["tool_calls"]) {

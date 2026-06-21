@@ -22,6 +22,10 @@
 #include <nlohmann/json.hpp>
 
 #include "sw/sac/agent.h"
+#include "sw/sac/agent_job_queue.h"
+#include "sw/sac/agent_server.h"
+#include "sw/sac/channel_responder_registry.h"
+#include "sw/sac/channels/lark_responder.h"
 #include "sw/sac/http_client.h"
 #include "sw/sac/llm_client.h"
 #include "sw/sac/errors.h"
@@ -29,61 +33,84 @@
 #include "sw/sac/providers/moonshot_provider.h"
 #include "sw/sac/tools/tools.h"
 
+namespace {
+
+std::string require_env(const char *name) {
+    const char *value = std::getenv(name);
+    if (value == nullptr || std::string(value).empty()) {
+        throw std::runtime_error(std::string(name) + " is not set");
+    }
+    return value;
+}
+
+std::string optional_env(const char *name, const std::string &default_value) {
+    const char *value = std::getenv(name);
+    if (value == nullptr || std::string(value).empty()) {
+        return default_value;
+    }
+    return value;
+}
+
+int optional_int_env(const char *name, int default_value) {
+    const char *value = std::getenv(name);
+    if (value == nullptr || std::string(value).empty()) {
+        return default_value;
+    }
+    return std::stoi(value);
+}
+
+std::size_t optional_size_env(const char *name, std::size_t default_value) {
+    const char *value = std::getenv(name);
+    if (value == nullptr || std::string(value).empty()) {
+        return default_value;
+    }
+    return static_cast<std::size_t>(std::stoull(value));
+}
+
+} // namespace
+
 int main() {
-    const char *api_key = std::getenv("OPENAI_API_KEY");
-    if (api_key == nullptr) {
-        std::cerr << "OPENAI_API_KEY is not set\n";
-        return 1;
-    }
-    const char *base_url = std::getenv("OPENAI_BASE_URL");
-    if (base_url == nullptr) {
-        std::cerr << "OPENAI_BASE_URL is not set\n";
-        return 1;
-    }
-    const char *model = std::getenv("OPENAI_MODEL");
-    if (model == nullptr) {
-        std::cerr << "OPENAI_MODEL is not set\n";
-        return 1;
-    }
-
-    sw::sac::CurlHttpClient http;
-    sw::sac::MoonshotOptions opts{base_url, api_key, model};
-    sw::sac::LlmClient client(
-        sw::sac::make_moonshot_provider(opts),
-        http);
-
-    // Create all available tools
-    auto tools = sw::sac::tools::make_all_tools();
-
     try {
+        auto api_key = require_env("OPENAI_API_KEY");
+        auto base_url = require_env("OPENAI_BASE_URL");
+        auto model = require_env("OPENAI_MODEL");
+
+        sw::sac::CurlHttpClient http;
+        sw::sac::MoonshotOptions opts{base_url, api_key, model};
+        sw::sac::LlmClient client(
+            sw::sac::make_moonshot_provider(opts),
+            http);
+
+        auto tools = sw::sac::tools::make_all_tools();
         sw::sac::Agent agent(client, std::move(tools), 10);
-        std::cout << agent.run("List the files in the current directory") << std::endl;
-    } catch (const sw::sac::Error &e) {
-        std::cerr << e.what() << std::endl;
-    }
 
-    /*
-    std::vector<sw::sac::Message> messages = {
-        {sw::sac::Role::USER, "Say hello in one sentence."},
-    };
+        sw::sac::ChannelResponderRegistry responders;
+        sw::sac::LarkResponderOptions lark_opts;
+        lark_opts.app_id = require_env("LARK_APP_ID");
+        lark_opts.app_secret = require_env("LARK_APP_SECRET");
+        lark_opts.api_base_url = optional_env(
+                "LARK_API_BASE_URL",
+                "https://open.feishu.cn");
+        responders.add(
+                "lark",
+                std::make_unique<sw::sac::LarkResponder>(lark_opts, http));
 
-    std::cout << "--- blocking ---\n";
-    try {
-        std::cout << client.chat(messages) << "\n";
-    } catch (const sw::sac::Error &e) {
-        std::cerr << e.what() << std::endl;
-    }
+        sw::sac::AgentJobQueue queue(
+                agent,
+                responders,
+                optional_size_env("SAC_AGENT_QUEUE_SIZE", 100));
 
-    std::cout << "--- streaming ---\n";
-    try {
-        client.chat_stream(messages, [](const std::string &token) {
-            std::cout << token << std::flush;
-        });
-    } catch (const sw::sac::Error &e) {
+        sw::sac::AgentServerOptions server_opts;
+        server_opts.host = optional_env("SAC_AGENT_HOST", "127.0.0.1");
+        server_opts.port = optional_int_env("SAC_AGENT_PORT", 8080);
+        server_opts.bearer_token = optional_env("SAC_AGENT_FORWARD_TOKEN", "");
+
+        sw::sac::AgentServer server(server_opts, queue);
+        server.listen();
+    } catch (const std::exception &e) {
         std::cerr << e.what() << std::endl;
+        return 1;
     }
-    std::cout << "\n";
-    */
 
     return 0;
 }
